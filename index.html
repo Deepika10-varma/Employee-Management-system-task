@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Employee Management System</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f4f6fb; --card:#fff; --text:#1d2433; --muted:#6b7385; --line:#e3e6ee; --brand:#0f766e; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#10141b; --card:#1a1f29; --text:#e8eaf2; --muted:#9aa1b5; --line:#2b3140; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 24px; background:var(--card); border-bottom:1px solid var(--line); font-size:20px; font-weight:700; }
+  main { max-width:1150px; margin:auto; padding:20px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card b { display:block; font-size:24px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .toolbar input { flex:1; min-width:180px; }
+  input, select, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+  button { cursor:pointer; background:var(--brand); color:#fff; border:0; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); padding:4px 10px; }
+  button.danger { color:var(--bad); }
+  .tablewrap { overflow-x:auto; padding:0; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { font-size:12px; text-transform:uppercase; color:var(--muted); }
+  .badge { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--line); }
+  .badge.ACTIVE { background:#16a34a; color:#fff; } .badge.ON_LEAVE { background:#d97706; color:#fff; } .badge.TERMINATED { background:#dc2626; color:#fff; }
+  dialog { border:1px solid var(--line); border-radius:14px; background:var(--card); color:var(--text); width:min(520px,94vw); padding:20px; }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  form { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  label { display:grid; gap:3px; font-size:13px; color:var(--muted); }
+  .full { grid-column:1/-1; } .actions { grid-column:1/-1; display:flex; justify-content:flex-end; gap:8px; }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--bad); color:#fff; padding:10px 16px; border-radius:10px; max-width:92%; display:none; z-index:99; }
+</style>
+</head>
+<body>
+<header>👥 Employee Management System</header>
+<main>
+  <div class="stats">
+    <div class="card"><span class="muted">Total employees</span><b id="sTotal">–</b></div>
+    <div class="card"><span class="muted">Average salary</span><b id="sAvg">–</b></div>
+    <div class="card"><span class="muted">By department</span><div id="sDept" class="muted">–</div></div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search" placeholder="Search name or email…">
+    <select id="deptFilter"><option value="">All departments</option></select>
+    <button id="addBtn">+ Add employee</button>
+  </div>
+
+  <div class="card tablewrap">
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Job title</th><th>Salary</th><th>Hired</th><th>Status</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <h3 id="dlgTitle" style="margin-top:0">Add employee</h3>
+  <form id="form">
+    <label>First name<input name="firstName"></label>
+    <label>Last name<input name="lastName"></label>
+    <label class="full">Email<input name="email" type="email"></label>
+    <label>Phone<input name="phone"></label>
+    <label>Department<select name="department" id="deptSelect"></select></label>
+    <label>Job title<input name="jobTitle"></label>
+    <label>Salary<input name="salary" type="number" min="0" step="0.01"></label>
+    <label>Hire date<input name="hireDate" type="date"></label>
+    <label>Status<select name="status"><option>ACTIVE</option><option>ON_LEAVE</option><option>TERMINATED</option></select></label>
+    <div class="actions"><button type="button" class="ghost" id="cancel">Cancel</button><button>Save</button></div>
+  </form>
+</dialog>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const DEPTS = ['Engineering', 'HR', 'Finance', 'Marketing', 'Sales', 'Operations'];
+// Same-origin when served by the Java server (port 8080); otherwise (file://, Live Server...) call it directly.
+const BASE = location.protocol.startsWith('http') && location.port === '8080' ? '/api' : 'http://localhost:8080/api';
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let employees = [], editId = null;
+
+async function api(method, path, body) {
+  let r;
+  try { r = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); }
+  catch { throw { message: 'Cannot reach the API at ' + BASE + '. Start the server (see README.md) and open http://localhost:8080' }; }
+  const data = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) throw data?.error ?? { message: 'Request failed (' + r.status + ')' };
+  return data;
+}
+function toast(err) {
+  const t = $('#toast');
+  t.textContent = err.message + (err.details?.length ? ' — ' + err.details.join('; ') : '');
+  t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 5000);
+}
+const money = n => Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+async function load() {
+  const q = new URLSearchParams({ search: $('#search').value, department: $('#deptFilter').value });
+  const [list, st] = await Promise.all([api('GET', '/employees?' + q), api('GET', '/employees/stats')]);
+  employees = list;
+  $('#sTotal').textContent = st.total; $('#sAvg').textContent = money(st.averageSalary);
+  $('#sDept').textContent = st.byDepartment.map(d => `${d.department}: ${d.count}`).join(' · ') || 'No data';
+  $('#rows').innerHTML = list.map(e => `<tr>
+    <td><b>${esc(e.firstName)} ${esc(e.lastName)}</b></td><td>${esc(e.email)}</td><td>${esc(e.department)}</td><td>${esc(e.jobTitle)}</td>
+    <td>${money(e.salary)}</td><td>${esc(e.hireDate)}</td><td><span class="badge ${e.status}">${e.status.replace('_', ' ')}</span></td>
+    <td><button class="ghost" onclick="edit(${e.id})">Edit</button> <button class="ghost danger" onclick="del(${e.id})">Delete</button></td></tr>`).join('')
+    || '<tr><td colspan="8" class="muted">No employees found.</td></tr>';
+}
+const safe = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e); } };
+
+$('#deptFilter').innerHTML += DEPTS.map(d => `<option>${d}</option>`).join('');
+$('#deptSelect').innerHTML = DEPTS.map(d => `<option>${d}</option>`).join('');
+
+$('#addBtn').onclick = () => { editId = null; $('#dlgTitle').textContent = 'Add employee'; $('#form').reset(); $('#dlg').showModal(); };
+$('#cancel').onclick = () => $('#dlg').close();
+window.edit = id => {
+  const e = employees.find(x => x.id === id); editId = id;
+  $('#dlgTitle').textContent = 'Edit employee';
+  for (const [k, v] of Object.entries(e)) if ($('#form').elements[k]) $('#form').elements[k].value = v ?? '';
+  $('#dlg').showModal();
+};
+window.del = safe(async id => {
+  if (!confirm('Delete this employee?')) return;
+  await api('DELETE', '/employees/' + id); await load();
+});
+$('#form').onsubmit = safe(async ev => {
+  ev.preventDefault();
+  const d = Object.fromEntries([...new FormData(ev.target)].filter(([, v]) => v !== ''));
+  if (d.salary !== undefined) d.salary = Number(d.salary);
+  await (editId ? api('PUT', '/employees/' + editId, d) : api('POST', '/employees', d));
+  $('#dlg').close(); await load();
+});
+let timer; $('#search').oninput = () => { clearTimeout(timer); timer = setTimeout(safe(load), 250); };
+$('#deptFilter').onchange = safe(load);
+safe(load)();
+</script>
+</body>
+</html>
